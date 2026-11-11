@@ -1,0 +1,32 @@
+name: Verify engine source
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: engine/go.sum
+      - name: Verify source snapshot
+        run: python3 scripts/verify-source.py
+      - name: Build headless engine
+        working-directory: engine
+        env:
+          CGO_ENABLED: '0'
+        run: go build -p 2 -trimpath -o ../dist/evoker ./cmd/evoker
+      - name: Verify hosted boundary
+        working-directory: engine
+        run: go test -p 2 ./agent -run TestEvoker -count=1

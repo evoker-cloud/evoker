@@ -1,0 +1,39 @@
+{
+  "image": "localhost/appset/evoker-artex@sha256:b47f3372bd543249735c65ca7d27c9e1dde107285c56abb4ca90906695b1963d",
+  "archiveSha256": "d8141ab7f14d9467233b442ba8f3052a4ebbc4380c083480f8cb28fd257cf656",
+  "binarySha256": "aeb9803b53817b579ff677632c28f50fb5be164a4f97f98cdb6fab10d0d3c397",
+  "python": "cpython-3.13.17-linux-x86_64-gnu",
+  "postgresBase": "docker.io/library/postgres@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f",
+  "configSha256": "2754fbe880b5ab08b3e950798de9079f00ab63c9bab659e2a9fb2efbd4f3fd25",
+  "manifestNote": "K3s Docker archive import converts OCI media types; pinned digest is the imported Docker manifest. Archive and config checksums verified.",
+  "provider": "appset",
+  "inputs": {
+    "source": {
+      "repository": "https://github.com/jiwoochris/artex-global.git",
+      "revision": "133f3cf97f2d153227a1a95d3c4b7cd5b72020a6",
+      "norma": "v0.4.4",
+      "status": "port-under-development-not-production-qualified",
+      "files": {
+        "LICENSE-ARTEX": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+        "LICENSE-NORMA": "930307fe92c0cdd524172effd340e5177b4e054d8576735db4e0b08f69ac6ba9",
+        "overlay/agent/evoker_hosted.go": "a83a6afd05816f0b8c4661f98a9a2c15c9fb5a9a4da0331016be1b1e2c42e1d0",
+        "overlay/agent/evoker_hosted_test.go": "580c4eccb6831ecbf0980650a018cd0e0dba049e5a8d61fa52bdeaeeb439a7f9",
+        "patches/hosted.patch": "01860c76273240c9ae35ef9dafc6cb988666195b1c71822d77a304f4e71fc536",
+        "patches/norma-small-context.patch": "fe788d7b275257cfad1ce5323a45ff71d677fc3156f69303a5534b0070fc3a54",
+        "overlay/agent/evoker_inspection.go": "98103c6ef7a4eefa3bff196cd1fed97f2fff23eb9047ea318fac52ba5d860d13",
+        "prepare.mjs": "68dbdf10902bb440c1e894f9e949aedde2d179a51ca48e02050747f604023275",
+        "overlay/cmd/evoker/main.go": "6e0c5ab546e73ed96bf2fb3dd19d5b0bd4a2d692341af755ac3e75c6fc1bc956",
+        "overlay/server/evoker_hosted.go": "af8629bc80477d7deeda67431e38e7dce9446a543aedc4f01d698480bc8b122c",
+        "runtime/supervisor.py": "268b837c82f2b9d1ed31760fd02a9f19d40cf4b22bb27494f2e04e3b046426fe",
+        "runtime/mailbox.py": "643d02de43ed7ad227f14257e1d063d855f662b245a127542b8de9b6d78b2fb3",
+        "build-runtime.py": "139cb6b187ef3c5e74a14382b029d426b1c26978b40d4086733e74fd9a486637",
+        "package-appset.py": "1fdd07fbc20b75be96bbf7c72dd7268b053989dda724ba3abbe56dbd9df5fcb6"
+      }
+    },
+    "base": "docker.io/library/postgres@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f",
+    "binarySha256": "aeb9803b53817b579ff677632c28f50fb5be164a4f97f98cdb6fab10d0d3c397",
+    "python": "cpython-3.13.17-linux-x86_64-gnu",
+    "craneVersion": "v0.22.1"
+  },
+  "sourceHash": "5e9cc84b8bae758d7a8205673d3c29ef3f3b21e356cdad250c1ccf39d9b42ab8"
+}

@@ -1,0 +1,18 @@
+Evoker security assessment engine
+
+Derived from ARTEX, copyright its respective authors and contributors.
+Source revision: 133f3cf97f2d153227a1a95d3c4b7cd5b72020a6
+Source mirror: https://github.com/jiwoochris/artex-global
+License: AGPL-3.0-only (engine/LICENSE)
+
+Modifications by Appset, Inc., November 2026:
+headless entrypoint, restricted tool boundary, model transport, context handling,
+dependency versions, normalized event and finding export, isolated runtime,
+and source/build packaging. Applied source and patches are included in engine/.
+
+Norma v0.4.4 and the included context-budget modifications are Apache-2.0.
+See engine/evoker-norma/LICENSE and engine/evoker-port/LICENSE-NORMA.
+Other third-party source retains its original notices and license files.
+
+Evoker Cloud is the hosted SaaS product. This repository is the open-source
+engine; the names do not imply affiliation with ARTEX's original authors.

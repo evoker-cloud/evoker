@@ -1,0 +1,447 @@
+diff --git a/agent/assembly.go b/agent/assembly.go
+index e55f986..5881988 100644
+--- a/agent/assembly.go
++++ b/agent/assembly.go
+@@ -37,6 +37,7 @@ var ToolAugment func(ctx context.Context, agentKey string) (extra []actool.CoreT
+ // DeferredInfo, and a cleanup func the caller must defer (closes MCP clients).
+ // Built-in base tools are kept as-is — never filtered (内置工具留代码层，不做可见性过滤).
+ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) ([]actool.CoreTool, DeferredInfo, func()) {
++	if EvokerHosted() { return evokerHostedTools(agentKey,base), DeferredInfo{}, func(){} }
+ 	var (
+ 		def     DeferredInfo
+ 		cleanup = func() {}
+diff --git a/agent/capture.go b/agent/capture.go
+index 61eba3f..cc03a4d 100644
+--- a/agent/capture.go
++++ b/agent/capture.go
+@@ -26,7 +26,7 @@ import (
+ // contiguous run is coalesced into a single record so the trace shows whole
+ // messages, not dozens of fragments.
+ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+-	s := agentcore.NewSession(opts)
++	s := agentcore.NewSession(evokerSessionOptions(opts))
+ 	defer s.Close() // release the session's background-task manager (temp dir + processes)
+ 	return captureRunSession(ctx, s, input, emit)
+ }
+diff --git a/agent/chat.go b/agent/chat.go
+index ad0e4f7..9309bc8 100644
+--- a/agent/chat.go
++++ b/agent/chat.go
+@@ -103,6 +103,7 @@ type chatVars struct{ DataDir, Now string }
+ // tool_use / tool_result / text / result), tagged with the agent key as the
+ // worker lane.
+ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, error) {
++	if EvokerHosted() { ctx=evokerRole(ctx,agentKey); webSearch=false }
+ 	// gate the global web-search opts by this agent's own flag.
+ 	ws := c.webSearch
+ 	if !webSearch {
+@@ -170,7 +171,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
+ 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
+ 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
+ 	ctx = attachSideCapture(ctx, &opts)
+-	s := agentcore.NewSession(opts)
++	s := agentcore.NewSession(evokerSessionOptions(opts))
+ 	defer s.Close()
+ 	// reload prior conversation so the agent has context across turns (each Chat is
+ 	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.
+diff --git a/agent/mainagent.go b/agent/mainagent.go
+index eb8fb51..1556b86 100644
+--- a/agent/mainagent.go
++++ b/agent/mainagent.go
+@@ -181,7 +181,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
+ 	}
+ 	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
+ 	ctx = attachSideCapture(ctx, &opts)
+-	s := agentcore.NewSession(opts)
++	s := agentcore.NewSession(evokerSessionOptions(opts))
+ 	defer s.Close()
+ 	// reload the prior conversation from the transcript so the agent has context
+ 	// across turns (each Chat is a fresh session; without this it can't see earlier
+diff --git a/agent/prompt.go b/agent/prompt.go
+index f0cff30..6ecbea0 100644
+--- a/agent/prompt.go
++++ b/agent/prompt.go
+@@ -37,6 +37,9 @@ func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
+ // half-rendered prompt. Callers append the code-owned tail (trafficTool / 中间产物
+ // 输出规约) AFTER this, so those can't be edited away via the DB body.
+ func renderSystem(agentKey, def string, vars any) string {
++	if EvokerHosted() && agentKey == "planner" {
++		if out, err := renderTmpl(evokerPlannerTemplate, vars); err == nil { return out }
++	}
+ 	tmpl := def
+ 	if PromptOverride != nil {
+ 		if t, ok := PromptOverride(agentKey); ok && t != "" {
+diff --git a/agent/provider.go b/agent/provider.go
+index 921b1af..e8f4c41 100644
+--- a/agent/provider.go
++++ b/agent/provider.go
+@@ -112,6 +112,7 @@ const (
+ // thresholds, resolved from the user-configured size (ContextWindowK). 0/unset →
+ // a 200K default; otherwise clamped to [32K, 1M] so compaction stays effective.
+ func (c Config) CompactionWindow() int {
++	if EvokerHosted() { return 8192 }
+ 	k := c.ContextWindowK
+ 	if k <= 0 {
+ 		k = defaultWindowK
+@@ -129,6 +130,7 @@ func (c Config) CompactionWindow() int {
+ // in tokens. agentcore.NewSession wires the summarizer (same provider) when this
+ // is set on Options.Compaction.
+ func compactionConfig(windowTokens int) *compaction.Config {
++	if EvokerHosted() { return &compaction.Config{ContextWindow:8192,MaxOutputTokens:1024,KeepRecent:2} }
+ 	if windowTokens <= 0 {
+ 		windowTokens = defaultWindowK * 1000
+ 	}
+@@ -143,6 +145,7 @@ func compactionConfig(windowTokens int) *compaction.Config {
+ //	ARTEX_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
+ //	ANTHROPIC_API_KEY / OPENAI_API_KEY         = credentials
+ func FromEnv() (Config, bool) {
++	if EvokerHosted() { c:=EvokerConfig(Config{Stream:true});return c,c.APIKey!="" }
+ 	prov := os.Getenv("ARTEX_LLM_PROVIDER")
+ 	anthKey := os.Getenv("ANTHROPIC_API_KEY")
+ 	oaiKey := os.Getenv("OPENAI_API_KEY")
+@@ -254,6 +257,7 @@ func (c Config) Provider() string {
+ // limiter lives on the single provider instance — so planner + all workers +
+ // main agent (which share this provider) are bounded by one shared rate limit.
+ func (c Config) NewProvider() (llm.Provider, error) {
++	c=EvokerConfig(c)
+ 	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+ 	if err != nil {
+ 		return nil, err
+@@ -336,6 +340,7 @@ type quotaAwareTransport struct {
+ }
+ 
+ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if EvokerHosted() { return evokerRoundTrip(t.base,req) }
+ 	// Custom session-id header: name is user-configured, value is THIS run's
+ 	// session id (norma stashes it on the context via transcript.WithSessionID).
+ 	// Stable across a session's turns and distinct across sessions — exactly what
+diff --git a/agent/worker.go b/agent/worker.go
+index 5cb281c..7990cc8 100644
+--- a/agent/worker.go
++++ b/agent/worker.go
+@@ -258,6 +258,7 @@ func workerTrafficBlock(recording bool) string {
+ // pentest agent's prompt — intermediate artifacts must land in the shared work
+ // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
+ func artifactSpec(dir string) string {
++	if EvokerHosted() { return "" }
+ 	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
+ }
+ 
+@@ -265,6 +266,7 @@ func artifactSpec(dir string) string {
+ // by the engine (ensureRunDir), so it just writes relative paths there — no manual
+ // mkdir, no cross-worker name collisions.
+ func workerArtifactSpec(runDir string) string {
++	if EvokerHosted() { return "" }
+ 	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
+ }
+ 
+@@ -368,7 +370,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
+ 		tsx.SetAssetStore(as, as.Companies())
+ 	}
+ 	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
+-	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
++	if EvokerHosted() { enr=nil }; tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
+ 	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
+ 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
+ 	// then augment with the agent's visible skills/MCP. During the SDK settlement
+@@ -494,7 +496,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
+ 	noaSession := WorkerSessionID(ts.ID(), intent.ID)
+ 	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
+ 	ctx = attachSideCapture(ctx, &opts)
+-	s := agentcore.NewSession(opts)
++	s := agentcore.NewSession(evokerSessionOptions(opts))
+ 	defer s.Close() // release the session's background-task manager (temp dir + processes)
+ 
+ 	// Resume prior conversation if this intent was paused/blocked/exhausted and is
+diff --git a/db/db.go b/db/db.go
+index dd61a60..1ad68fd 100644
+--- a/db/db.go
++++ b/db/db.go
+@@ -9,6 +9,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"net/url"
++ "os"
+ 	"strings"
+ 	"time"
+ 
+@@ -132,7 +133,7 @@ func ensureDatabase(dsn string) error {
+ 
+ // Open connects, applies the schema (idempotent), and seeds builtin rows.
+ func Open(dsn string) (*DB, error) {
+-	if err := ensureDatabase(dsn); err != nil {
++	if err := func() error { if os.Getenv("EVOKER_HOSTED")=="true" {return nil};return ensureDatabase(dsn) }(); err != nil {
+ 		return nil, err
+ 	}
+ 	sqlDB, err := sql.Open("pgx", dsn)
+@@ -145,8 +146,9 @@ func Open(dsn string) (*DB, error) {
+ 	// already` 라는 오류를 받고, 이 오류는 아래 인증 경로의 "읽기 실패"와 같은 모양이 된다.
+ 	// 상한을 두면 초과분은 유휴 커넥션을 기다려(오류 대신 느려짐), reset-password.sh·psql 을
+ 	// 위한 여유도 남는다. max_connections 를 낮춰 운영하면 이 값도 함께 낮춘다.
+-	sqlDB.SetMaxOpenConns(maxOpenConns)
+-	sqlDB.SetMaxIdleConns(maxOpenConns)
++	connections:=maxOpenConns; if os.Getenv("EVOKER_HOSTED")=="true" {connections=2}
++ sqlDB.SetMaxOpenConns(connections)
++ sqlDB.SetMaxIdleConns(connections)
+ 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+ 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+ 	if err := sqlDB.Ping(); err != nil {
+diff --git a/go.mod b/go.mod
+index e5ca0c3..66e3e48 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,26 +1,27 @@
+ module github.com/Autumn-27/artex
+ 
+-go 1.26.3
++go 1.26.10
+ 
+ require (
+ 	github.com/Autumn-27/norma v0.4.4
+ 	github.com/golang-jwt/jwt/v5 v5.3.1
+ 	github.com/google/uuid v1.6.0
+ 	github.com/jackc/pgx/v5 v5.10.0
+-	github.com/klauspost/compress v1.18.6
++	github.com/klauspost/compress v1.20.2
+ 	github.com/lqqyt2423/go-mitmproxy v1.9.2
+ 	github.com/miekg/dns v1.1.72
+ 	github.com/projectdiscovery/dnsx v1.2.3
+-	golang.org/x/crypto v0.55.0
+-	golang.org/x/net v0.58.0
+-	golang.org/x/text v0.41.0
++	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
++	golang.org/x/net v0.62.0
++	golang.org/x/text v0.43.0
+ 	modernc.org/sqlite v1.52.0
+ )
+ 
+ require (
+-	github.com/andybalholm/brotli v1.2.1 // indirect
++	github.com/andybalholm/brotli v1.2.7 // indirect
+ 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
+ 	github.com/aymerick/douceur v0.2.0 // indirect
++	github.com/cloudflare/circl v1.6.3 // indirect
+ 	github.com/creack/pty v1.1.24 // indirect
+ 	github.com/dustin/go-humanize v1.0.1 // indirect
+ 	github.com/gaissmai/bart v0.26.0 // indirect
+@@ -40,6 +41,7 @@ require (
+ 	github.com/projectdiscovery/cdncheck v1.2.13 // indirect
+ 	github.com/projectdiscovery/retryabledns v1.0.111 // indirect
+ 	github.com/projectdiscovery/utils v0.7.3 // indirect
++	github.com/refraction-networking/utls v1.8.2 // indirect
+ 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+ 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
+ 	github.com/satori/go.uuid v1.2.0 // indirect
+@@ -48,15 +50,18 @@ require (
+ 	github.com/tidwall/match v1.2.0 // indirect
+ 	github.com/tidwall/pretty v1.2.1 // indirect
+ 	github.com/weppos/publicsuffix-go v0.40.3-0.20250408071509-6074bbe7fd39 // indirect
++	github.com/yuin/goldmark v1.7.17 // indirect
+ 	go.uber.org/atomic v1.11.0 // indirect
+ 	go.uber.org/multierr v1.11.0 // indirect
+ 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
+-	golang.org/x/mod v0.40.0 // indirect
+-	golang.org/x/sync v0.22.0 // indirect
+-	golang.org/x/sys v0.47.0 // indirect
+-	golang.org/x/tools v0.49.0 // indirect
++	golang.org/x/mod v0.41.0 // indirect
++	golang.org/x/sync v0.24.0 // indirect
++	golang.org/x/sys v0.49.0 // indirect
++	golang.org/x/tools v0.51.0 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ 	modernc.org/libc v1.72.3 // indirect
+ 	modernc.org/mathutil v1.7.1 // indirect
+ 	modernc.org/memory v1.11.0 // indirect
+ )
++
++replace github.com/Autumn-27/norma => ./evoker-norma
+diff --git a/go.sum b/go.sum
+index 822cec2..1ba3104 100644
+--- a/go.sum
++++ b/go.sum
+@@ -2,10 +2,14 @@ github.com/Autumn-27/norma v0.4.4 h1:wdifhqGJKiCvtGz5tv81C/dVA6eK5yvBWka3ZkoWeNU
+ github.com/Autumn-27/norma v0.4.4/go.mod h1:BudWrf7iHl96FgHqFr/HwN3mKYmGjJDt+xL2ZHXfFZw=
+ github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
+ github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
++github.com/andybalholm/brotli v1.2.7 h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A=
++github.com/andybalholm/brotli v1.2.7/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+ github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=
+ github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2/go.mod h1:WaHUgvxTVq04UNunO+XhnAqY/wQc+bxr74GqbsZ/Jqw=
+ github.com/aymerick/douceur v0.2.0 h1:Mv+mAeH1Q+n9Fr+oyamOlAkUNPWPlA8PPGR0QAaYuPk=
+ github.com/aymerick/douceur v0.2.0/go.mod h1:wlT5vV2O3h55X9m7iVYN0TBM0NH/MmbLnd30/FjWUq4=
++github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=
++github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=
+ github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
+ github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
+ github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
+@@ -44,6 +48,8 @@ github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo
+ github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+ github.com/klauspost/compress v1.18.6 h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=
+ github.com/klauspost/compress v1.18.6/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
++github.com/klauspost/compress v1.20.2 h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo=
++github.com/klauspost/compress v1.20.2/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+ github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
+ github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
+ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+@@ -74,6 +80,8 @@ github.com/projectdiscovery/retryabledns v1.0.111 h1:iyMdCDgNmaSRJYcGqB+SLlvlw9W
+ github.com/projectdiscovery/retryabledns v1.0.111/go.mod h1:6TOPJ3QAE4reBu6bvsGsTcyEb+OypcKYFQH7yVsjyIM=
+ github.com/projectdiscovery/utils v0.7.3 h1:kX+77AA58yK6EZgkTRJEnK9V/7AZYzlXdcu/o/kJhFs=
+ github.com/projectdiscovery/utils v0.7.3/go.mod h1:uDdQ3/VWomai98l+a3Ye/srDXdJ4xUIar/mSXlQ9gBM=
++github.com/refraction-networking/utls v1.8.2 h1:j4Q1gJj0xngdeH+Ox/qND11aEfhpgoEvV+S9iJ2IdQo=
++github.com/refraction-networking/utls v1.8.2/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
+ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
+ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+ github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
+@@ -102,27 +110,45 @@ github.com/weppos/publicsuffix-go v0.40.3-0.20250408071509-6074bbe7fd39 h1:Bz/zV
+ github.com/weppos/publicsuffix-go v0.40.3-0.20250408071509-6074bbe7fd39/go.mod h1:2oFzEwGYI7lhiqG0YkkcKa6VcpjVinQbWxaPzytDmLA=
+ github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
+ github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
++github.com/yuin/goldmark v1.7.17 h1:p36OVWwRb246iHxA/U4p8OPEpOTESm4n+g+8t0EE5uA=
++github.com/yuin/goldmark v1.7.17/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
+ go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
+ go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
+ go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=
+ go.uber.org/multierr v1.11.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
+ golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
+ golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
++golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
++golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
++golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2 h1:zGDaB+/Mus2mScKvZ23k+W9NAUbP56sNM9SptgvWI5A=
++golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
+ golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 h1:yqrTHse8TCMW1M1ZCP+VAR/l0kKxwaAIqN/il7x4voA=
+ golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8/go.mod h1:tujkw807nyEEAamNbDrEGzRav+ilXA7PCRAd6xsmwiU=
+ golang.org/x/mod v0.40.0 h1:hUv+3cXcdRHz08UmSiOob7sadHig73uo5bkXxQ/tvUs=
+ golang.org/x/mod v0.40.0/go.mod h1:0/weTWkPWGBikyTWAX3dkjVztMmBA5hM0DH6BElSupE=
++golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
++golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
+ golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
+ golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
++golang.org/x/net v0.62.0 h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY=
++golang.org/x/net v0.62.0/go.mod h1:WgDCOTH8iwtB66T4/GfI94AHo/hhdb7Hah9NDseQfiI=
+ golang.org/x/sync v0.22.0 h1:SZjpbeLmrCk4xhRSZFNZW5gFUeCeFgjekvI/+gfScek=
+ golang.org/x/sync v0.22.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
++golang.org/x/sync v0.24.0 h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=
++golang.org/x/sync v0.24.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
+ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+ golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
++golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+ golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+ golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
++golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=
++golang.org/x/text v0.43.0/go.mod h1:hbSIYA/amXcRXTFSZqh8tWHEoqRvvbKPJ2uz/KU+a+s=
+ golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
+ golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
++golang.org/x/tools v0.51.0 h1:k4Xc/1Om9jwkBJBo4NVLMSARBoWtK10mx+W5BnXCeAI=
++golang.org/x/tools v0.51.0/go.mod h1:9eEncMayCV6zRMGhR5eZEC2iBx98qWcF1HZ9Z7wJOoA=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
+ gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
+diff --git a/server/manager.go b/server/manager.go
+index f4b43b9..92a1213 100644
+--- a/server/manager.go
++++ b/server/manager.go
+@@ -321,6 +321,7 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
+ // Workers returns the configured concurrent work-agent count (default 3). Read
+ // per-task at engine.Run, so a change applies to tasks started afterwards.
+ func (m *Manager) Workers() int {
++ if agent.EvokerHosted() { return 1 }
+ 	v, ok, err := m.pg.GetSetting(settingWorkers)
+ 	if err != nil || !ok {
+ 		return defaultWorkers
+@@ -454,10 +455,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
+ 			log.Printf("[proxy] ignoring invalid global proxy %q: %v", m.globalProxy, err)
+ 		}
+ 	}
+-	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
++	if !agent.EvokerHosted() { m.enrich = enrich.New(m.assets, m.ProxyAddr, 4) }
+ 	// Reconcile the seeded browser MCP with the persisted capture state, so a
+ 	// restart with capture already on keeps Playwright routed through the proxy.
+-	m.syncBrowserMCPProxy()
++	if !agent.EvokerHosted() { m.syncBrowserMCPProxy() }
+ 	return m, nil
+ }
+ 
+diff --git a/server/server.go b/server/server.go
+index ccd61ca..0e69a97 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -226,7 +226,7 @@ type triggeredRun struct {
+ }
+ 
+ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
+-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
++	key, err := func() ([]byte,error) { if agent.EvokerHosted() {return nil,nil};return loadOrCreateJWTKey(keyDir,dataDir) }()
+ 	if err != nil {
+ 		log.Fatalf("[auth] JWT key: %v", err)
+ 	}
+@@ -238,7 +238,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
+ 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+ 	// First-run protection: cache the password hash and, while none is set, issue
+ 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
+-	s.bootstrapAuth()
++	if !agent.EvokerHosted() { s.bootstrapAuth() }
+ 	s.initSideQuestions()
+ 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
+ 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
+@@ -328,13 +328,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
+ 			log.Printf("[retester] seed: %v", err)
+ 		}
+ 		go s.evidenceStore().RunGC(s.ctx)
+-		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
++		if !agent.EvokerHosted() { s.seedPythonInterpreter() }     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
+ 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+ 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
+ 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
+ 		// 통합 테스트는 stepRealtime·stepDigest 를 직접 호출해 분배를 결정론적으로
+ 		// 검증하므로, 이 환경 변수로 백그라운드 루프만 끌 수 있다(미설정이 기본).
+-		if os.Getenv(notifyBackgroundDisabledEnv) == "" {
++		if !agent.EvokerHosted() && os.Getenv(notifyBackgroundDisabledEnv) == "" {
+ 			go newNotifier(s).Run(s.ctx)
+ 		} else {
+ 			// 핵심 기능(취약점 IM 알림 전송)을 끄는 분기라 시작 로그를 남긴다. 이 변수는
+@@ -343,7 +343,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
+ 		}
+ 		// Fill the tool cache for any enabled MCP that has none yet (notably the
+ 		// seeded browser MCP on first run). Async so it never blocks startup.
+-		go s.discoverEmptyMCPsOnStartup()
++		if !agent.EvokerHosted() { go s.discoverEmptyMCPsOnStartup() }
+ 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
+ 	}
+ 	// precedence: persisted DB config > env.
+@@ -362,7 +362,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
+ 	} else {
+ 		log.Printf("[engine] no LLM provider configured - engine idle until set via /api/llm or env")
+ 	}
+-	s.restoreTaskRuntimes()
++	if !agent.EvokerHosted() { s.restoreTaskRuntimes() }
+ 	go s.reconcileConcurrency()
+ 	s.startTaskArchiveWorker()
+ 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+@@ -450,7 +450,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
+ 	s.cfgMu.Lock()
+ 	s.llmProf = p.Name
+ 	s.cfgMu.Unlock()
+-	return cfg, true
++	return agent.EvokerConfig(cfg), true
+ }
+ 
+ // saveLLMConfig persists the LLM config as the active "default" profile in PG.
+@@ -618,7 +618,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
+ 	if cfg.APIKey == "" {
+ 		return cfg, false
+ 	}
+-	return cfg, true
++	return agent.EvokerConfig(cfg), true
+ }
+ 
+ // effectiveProfileForAgent resolves the LLM profile id an agent should run on, by
+@@ -758,6 +758,7 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
+ }
+ 
+ func (s *Server) Handler() http.Handler {
++ if agent.EvokerHosted() { return http.NotFoundHandler() }
+ 	mux := http.NewServeMux()
+ 	s.registerSideRoutes(mux)
+ 
