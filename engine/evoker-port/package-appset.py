@@ -5,6 +5,7 @@ Usage: package-appset.py linux-artifact python-install layer.tgz
 Append with the digest-pinned postgres base using crane mutate --output.
 """
 import hashlib
+import copy
 import io
 import json
 import pathlib
@@ -26,7 +27,26 @@ def metadata(info):
     return info
 
 with tarfile.open(output, 'w:gz', format=tarfile.PAX_FORMAT) as archive:
-    archive.add(python, arcname='opt/python', filter=metadata)
+    if python.is_file():
+        # Preserve Linux case-sensitive names and symlinks when packaging on
+        # macOS. Extracting terminfo to a case-insensitive disk corrupts links.
+        with tarfile.open(python, 'r:*') as runtime:
+            for original in runtime:
+                path = pathlib.PurePosixPath(original.name)
+                if path.is_absolute() or '..' in path.parts or path.parts[0] != 'python':
+                    raise ValueError('Unexpected Python archive path')
+                item = copy.copy(original)
+                item.name = str(pathlib.PurePosixPath('opt/python') / path.relative_to('python'))
+                if item.islnk():
+                    target = pathlib.PurePosixPath(item.linkname)
+                    if target.is_absolute() or '..' in target.parts or target.parts[0] != 'python':
+                        raise ValueError('Unexpected Python hard link')
+                    item.linkname = str(pathlib.PurePosixPath('opt/python') / target.relative_to('python'))
+                if not (item.isfile() or item.isdir() or item.issym() or item.islnk()):
+                    raise ValueError('Unexpected Python archive entry')
+                archive.addfile(metadata(item), runtime.extractfile(original) if item.isfile() else None)
+    else:
+        archive.add(python, arcname='opt/python', filter=metadata)
     archive.add(binary, arcname='opt/evoker/evoker-artex', filter=metadata)
     for name in ('supervisor.py', 'mailbox.py'):
         archive.add(root / 'runtime' / name, arcname='opt/evoker/' + name, filter=metadata)
